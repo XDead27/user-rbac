@@ -16,12 +16,14 @@ export function RoleEditModal({
   availableRoles = [],
   domains = [],
   entities = [],
+  areas = [],
   services = {}
 }) {
   const [form] = Form.useForm();
   const [showTemplate, setShowTemplate] = useState(false);
   const [domainRestrictions, setDomainRestrictions] = useState([]);
   const [entityRestrictions, setEntityRestrictions] = useState([]);
+  const [areaRestrictions, setAreaRestrictions] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [denyAll, setDenyAll] = useState(false);
   const [templateTestResult, setTemplateTestResult] = useState(null); // null, 'loading', 'true', 'false', 'error'
@@ -31,6 +33,7 @@ export function RoleEditModal({
   const [currentUserEntity, setCurrentUserEntity] = useState(null);
   const [showDomainSelects, setShowDomainSelects] = useState({});
   const [showEntitySelects, setShowEntitySelects] = useState({});
+  const [showAreaSelects, setShowAreaSelects] = useState({});
 
   useEffect(() => {
     if (visible && roleConfig) {
@@ -47,6 +50,7 @@ export function RoleEditModal({
       // Initialize restrictions arrays
       const domainRestrictions = [];
       const entityRestrictions = [];
+      const areaRestrictions = [];
       
       if (roleConfig.permissions?.domains) {
         Object.entries(roleConfig.permissions.domains).forEach(([domain, config]) => {
@@ -68,8 +72,19 @@ export function RoleEditModal({
         });
       }
       
+      if (roleConfig.permissions?.areas) {
+        Object.entries(roleConfig.permissions.areas).forEach(([area, config]) => {
+          areaRestrictions.push({
+            area,
+            services: config.services || [],
+            allow: config.allow || false
+          });
+        });
+      }
+      
       setDomainRestrictions(domainRestrictions);
       setEntityRestrictions(entityRestrictions);
+      setAreaRestrictions(areaRestrictions);
       setShowTemplate(!!roleConfig.template);
       setIsAdmin(roleConfig.admin || false);
       setDenyAll(roleConfig.deny_all || false);
@@ -90,13 +105,20 @@ export function RoleEditModal({
         entityShowStates[index] = restriction.services.length > 0;
       });
       
+      const areaShowStates = {};
+      areaRestrictions.forEach((restriction, index) => {
+        areaShowStates[index] = restriction.services.length > 0;
+      });
+      
       setShowDomainSelects(domainShowStates);
       setShowEntitySelects(entityShowStates);
+      setShowAreaSelects(areaShowStates);
     } else if (visible) {
       // New role
       form.resetFields();
       setDomainRestrictions([]);
       setEntityRestrictions([]);
+      setAreaRestrictions([]);
       setShowTemplate(false);
       setIsAdmin(false);
       setDenyAll(false);
@@ -107,6 +129,7 @@ export function RoleEditModal({
       setTemplateEvaluatedValue(null);
       setShowDomainSelects({});
       setShowEntitySelects({});
+      setShowAreaSelects({});
     }
   }, [visible, roleConfig, form]);
 
@@ -138,12 +161,17 @@ export function RoleEditModal({
         ...restriction,
         allow: true
       }));
+      setAreaRestrictions(areaRestrictions.map(restriction => ({
+        ...restriction,
+        allow: true
+      })));
       setDomainRestrictions(updatedDomainRestrictions);
       setEntityRestrictions(updatedEntityRestrictions);
     } else if (choice === 'clear') {
       // Clear all restrictions
       setDomainRestrictions([]);
       setEntityRestrictions([]);
+      setAreaRestrictions([]);
     } else if (choice === 'cancel') {
       // Cancel - disable deny_all and keep existing restrictions
       setDenyAll(false);
@@ -158,6 +186,7 @@ export function RoleEditModal({
       // Convert restrictions arrays back to objects
       const domains = {};
       const entities = {};
+      const areas = {};
       
       domainRestrictions.forEach(restriction => {
         domains[restriction.domain] = {
@@ -173,13 +202,22 @@ export function RoleEditModal({
         };
       });
       
+      areaRestrictions.forEach(restriction => {
+        if (!restriction.area) return;
+        areas[restriction.area] = {
+          services: restriction.services,
+          allow: restriction.allow || false
+        };
+      });
+      
       const roleData = {
         description: values.description,
         admin: values.admin || false,
         deny_all: values.deny_all || false,
         permissions: {
           domains,
-          entities
+          entities,
+          areas
         }
       };
       
@@ -263,6 +301,37 @@ export function RoleEditModal({
     setEntityRestrictions(updated);
   };
 
+  const addAreaRestriction = () => {
+    const newIndex = areaRestrictions.length;
+    setAreaRestrictions([...areaRestrictions, { area: '', services: [], allow: denyAll }]);
+    setShowAreaSelects({ ...showAreaSelects, [newIndex]: false });
+  };
+
+  const removeAreaRestriction = (index) => {
+    setAreaRestrictions(areaRestrictions.filter((_, i) => i !== index));
+    // Reindex show states of the remaining restrictions
+    const reindexedStates = {};
+    Object.keys(showAreaSelects).forEach(key => {
+      const keyIndex = parseInt(key);
+      if (keyIndex > index) {
+        reindexedStates[keyIndex - 1] = showAreaSelects[key];
+      } else if (keyIndex < index) {
+        reindexedStates[keyIndex] = showAreaSelects[key];
+      }
+    });
+    setShowAreaSelects(reindexedStates);
+  };
+
+  const updateAreaRestriction = (index, field, value) => {
+    const updated = [...areaRestrictions];
+    updated[index] = { ...updated[index], [field]: value };
+    setAreaRestrictions(updated);
+  };
+
+  const showAreaSelect = (index) => {
+    setShowAreaSelects({ ...showAreaSelects, [index]: true });
+  };
+
   const showDomainSelect = (index) => {
     setShowDomainSelects({ ...showDomainSelects, [index]: true });
   };
@@ -277,6 +346,18 @@ export function RoleEditModal({
 
   const getServicesForEntity = (entity) => {
     return services.entities?.[entity] || [];
+  };
+
+  // Services of all domains that have entities in the area
+  const getServicesForArea = (areaId) => {
+    const area = areas.find(a => a.id === areaId);
+    if (!area) return [];
+    const areaDomains = new Set(area.entities.map(entity => entity.split('.')[0]));
+    const areaServices = new Set();
+    areaDomains.forEach(domain => {
+      getServicesForDomain(domain).forEach(service => areaServices.add(service));
+    });
+    return [...areaServices].sort();
   };
 
   const getHAAuth = async () => {
@@ -468,7 +549,7 @@ export function RoleEditModal({
                         form.setFieldsValue({ deny_all: checked });
                         if (checked) {
                           // Check if there are existing domains/entities with allow=false to convert
-                          const hasBlockingRestrictions = domainRestrictions.some(r => !r.allow) || entityRestrictions.some(r => !r.allow);
+                          const hasBlockingRestrictions = domainRestrictions.some(r => !r.allow) || areaRestrictions.some(r => !r.allow) || entityRestrictions.some(r => !r.allow);
                           if (hasBlockingRestrictions) {
                             // Show conversion warning dialog
                             showConversionWarning();
@@ -827,6 +908,109 @@ export function RoleEditModal({
           style={{ width: '100%', marginBottom: 16 }}
         >
           Add Domain
+        </Button>
+
+        <Divider>Areas (Rooms)</Divider>
+
+        {areaRestrictions.map((restriction, index) => (
+          <div key={index} style={{ marginBottom: 16, padding: 16, border: '1px solid #f0f0f0', borderRadius: 6 }} data-restriction-index={index}>
+            <Row gutter={16} align="middle">
+              <Col span={10}>
+                <Select
+                  showSearch
+                  placeholder="Select area"
+                  value={restriction.area || undefined}
+                  onChange={(value) => updateAreaRestriction(index, 'area', value)}
+                  style={{ width: '100%' }}
+                  optionFilterProp="label"
+                  options={areas.map(area => ({
+                    value: area.id,
+                    label: `${area.name} (${area.entities.length} entities)`
+                  }))}
+                />
+              </Col>
+              <Col span={10}>
+                {!showAreaSelects[index] ? (
+                  <Tooltip title={restriction.allow ? "Add specific services to allow" : "Add specific services"}>
+                    <Button
+                      type="dashed"
+                      icon={<PlusOutlined />}
+                      onClick={() => showAreaSelect(index)}
+                      style={{
+                        width: '100%',
+                        height: '32px',
+                        border: '2px dashed #d9d9d9',
+                        background: 'transparent',
+                        color: '#999',
+                        opacity: 0.6,
+                        transition: 'all 0.3s ease'
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.opacity = '1';
+                        e.currentTarget.style.borderColor = '#1890ff';
+                        e.currentTarget.style.color = '#1890ff';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.opacity = '0.6';
+                        e.currentTarget.style.borderColor = '#d9d9d9';
+                        e.currentTarget.style.color = '#999';
+                      }}
+                    >
+                      {restriction.allow ? "Allow Services" : "Services"}
+                    </Button>
+                  </Tooltip>
+                ) : (
+                  <Select
+                    mode="multiple"
+                    showSearch
+                    placeholder={restriction.allow ? "Select services to allow (empty = allow all)" : "Select services (empty = block all)"}
+                    value={restriction.services}
+                    onChange={(value) => updateAreaRestriction(index, 'services', value)}
+                    style={{ width: '100%' }}
+                    filterOption={(input, option) =>
+                      option.children.toLowerCase().indexOf(input.toLowerCase()) >= 0
+                    }
+                  >
+                    {getServicesForArea(restriction.area).map(service => (
+                      <Select.Option key={service} value={service}>{service}</Select.Option>
+                    ))}
+                  </Select>
+                )}
+              </Col>
+              <Col span={2}>
+                <Tooltip title={restriction.allow ? "Allow devices/entities in this area" : "Block devices/entities in this area"}>
+                  <Switch
+                    size="small"
+                    checked={restriction.allow}
+                    onChange={(checked) => updateAreaRestriction(index, 'allow', checked)}
+                    checkedChildren="✓"
+                    unCheckedChildren="✗"
+                    disabled={denyAll && restriction.allow}
+                    style={{
+                      backgroundColor: restriction.allow ? '#52c41a' : '#ff4d4f'
+                    }}
+                  />
+                </Tooltip>
+              </Col>
+              <Col span={2}>
+                <Button
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() => removeAreaRestriction(index)}
+                />
+              </Col>
+            </Row>
+          </div>
+        ))}
+
+        <Button
+          type="dashed"
+          icon={<PlusOutlined />}
+          onClick={addAreaRestriction}
+          style={{ width: '100%', marginBottom: 16 }}
+        >
+          Add Area
         </Button>
 
         <Divider>Entities</Divider>

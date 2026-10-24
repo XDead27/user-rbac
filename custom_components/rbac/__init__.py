@@ -122,12 +122,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     user_count = len(access_config.get("users", {}))
     _LOGGER.info(f"RBAC Middleware initialized successfully with {user_count} configured users")
     
-    from .services import RBACConfigView, RBACUsersView, RBACDomainsView, RBACEntitiesView, RBACServicesView, RBACCurrentUserView, RBACSensorsView, RBACDenyLogView, RBACTemplateEvaluateView, RBACFrontendBlockingView, RBACYamlEditorView
+    from .services import RBACConfigView, RBACUsersView, RBACDomainsView, RBACEntitiesView, RBACAreasView, RBACServicesView, RBACCurrentUserView, RBACSensorsView, RBACDenyLogView, RBACTemplateEvaluateView, RBACFrontendBlockingView, RBACYamlEditorView
     
     hass.http.register_view(RBACConfigView())
     hass.http.register_view(RBACUsersView())
     hass.http.register_view(RBACDomainsView())
     hass.http.register_view(RBACEntitiesView())
+    hass.http.register_view(RBACAreasView())
     hass.http.register_view(RBACServicesView())
     hass.http.register_view(RBACCurrentUserView())
     hass.http.register_view(RBACSensorsView())
@@ -292,7 +293,9 @@ def _patch_service_registry(hass: HomeAssistant):
                 if rbac_enabled:
                     _LOGGER.warning(f"Access config for {user_name}: {access_config}")
                     
-                    access_result, reason = _check_service_access_with_reason(domain, service, service_data, user_id, access_config, self._hass)
+                    access_result, reason = _check_service_access_with_reason(
+                        domain, service, service_data, user_id, access_config, self._hass, kwargs.get("target")
+                    )
                     
                     if not access_result and service_data and "entity_id" in service_data:
                         _LOGGER.warning(f"Access check result for {user_name}: {access_result}, reason: {reason}")
@@ -560,13 +563,178 @@ async def _is_builtin_ha_user(user_id: str, hass: HomeAssistant = None) -> bool:
     return bool(user.system_generated)
 
 
+def _get_entity_area_id(hass: HomeAssistant, entity_id: str) -> Optional[str]:
+    """Get the area of an entity: its own area, falling back to its device's area."""
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+
+    entry = er.async_get(hass).async_get(entity_id)
+    if entry is None:
+        return None
+    if entry.area_id:
+        return entry.area_id
+    if entry.device_id:
+        device = dr.async_get(hass).async_get(entry.device_id)
+        if device:
+            return device.area_id
+    return None
+
+
+def _as_set(value: Any) -> set:
+    """Normalize a single value or list from a service target into a set."""
+    if not value:
+        return set()
+    if isinstance(value, str):
+        return {v.strip() for v in value.split(",") if v.strip()}
+    if isinstance(value, (list, tuple, set)):
+        return {v for v in value if isinstance(v, str)}
+    return set()
+
+
+def _resolve_target_entities(
+    hass: HomeAssistant,
+    domain: str,
+    service: str,
+    service_data: Optional[Dict[str, Any]],
+    target: Optional[Dict[str, Any]] = None
+) -> set:
+    """Resolve all entities targeted by a service call.
+
+    Expands entity_id, area_id, device_id, floor_id and label_id targets
+    from both service_data and the target kwarg into entity IDs.
+    """
+    from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
+
+    data = {}
+    if isinstance(service_data, dict):
+        data.update(service_data)
+    if isinstance(target, dict):
+        data.update(target)
+
+    entity_ids = _as_set(data.get("entity_id"))
+    if "all" in entity_ids:
+        entity_ids.discard("all")
+        entity_ids.update(hass.states.async_entity_ids(domain))
+
+    # Scripts can be called directly as script.<script_name>
+    if domain == "script" and hass.states.get(f"script.{service}") is not None:
+        entity_ids.add(f"script.{service}")
+
+    area_ids = _as_set(data.get("area_id"))
+    device_ids = _as_set(data.get("device_id"))
+    floor_ids = _as_set(data.get("floor_id"))
+    label_ids = _as_set(data.get("label_id"))
+
+    if not (area_ids or device_ids or floor_ids or label_ids):
+        return entity_ids
+
+    area_reg = ar.async_get(hass)
+    device_reg = dr.async_get(hass)
+    entity_reg = er.async_get(hass)
+
+    if floor_ids or label_ids:
+        for area in area_reg.async_list_areas():
+            if getattr(area, "floor_id", None) in floor_ids or label_ids & set(getattr(area, "labels", ()) or ()):
+                area_ids.add(area.id)
+
+    if label_ids:
+        for device in device_reg.devices.values():
+            if label_ids & set(getattr(device, "labels", ()) or ()):
+                device_ids.add(device.id)
+
+    for entry in entity_reg.entities.values():
+        if entry.entity_category is not None or entry.hidden_by is not None:
+            # HA skips config/diagnostic and hidden entities when expanding area/device targets
+            if not (label_ids & set(getattr(entry, "labels", ()) or ())):
+                continue
+        if entry.domain != domain and domain not in ("homeassistant",):
+            continue
+        if label_ids & set(getattr(entry, "labels", ()) or ()):
+            entity_ids.add(entry.entity_id)
+        elif entry.device_id in device_ids:
+            entity_ids.add(entry.entity_id)
+        elif _get_entity_area_id(hass, entry.entity_id) in area_ids:
+            entity_ids.add(entry.entity_id)
+
+    return entity_ids
+
+
+def _rule_decision(rule_config: Any, service: str) -> Optional[bool]:
+    """Evaluate a single allow/block rule. Returns True/False, or None if the rule doesn't decide."""
+    if not isinstance(rule_config, dict):
+        return False
+    rule_services = rule_config.get("services", []) or []
+    if rule_config.get("allow", False):
+        return not rule_services or service in rule_services
+    if not rule_services or service in rule_services:
+        return False
+    return None
+
+
+def _check_area_access(
+    hass: HomeAssistant,
+    domain: str,
+    service: str,
+    service_data: Optional[Dict[str, Any]],
+    target: Optional[Dict[str, Any]],
+    permissions: Dict[str, Any],
+    default_restrictions: Dict[str, Any],
+    user_role: str
+) -> Optional[tuple[bool, str]]:
+    """Check role area (room) permissions for every entity targeted by a call.
+
+    Precedence per entity: role entity rule > role area rule. Returns a decision
+    only if any entity is denied or all entities are allowed; otherwise None so
+    domain rules and Allow/Deny All apply.
+    """
+    role_areas = permissions.get("areas", {}) or {}
+    if not role_areas:
+        return None
+
+    entity_ids = _resolve_target_entities(hass, domain, service, service_data, target)
+    if not entity_ids:
+        return None
+
+    role_entities = permissions.get("entities", {}) or {}
+    default_entities = default_restrictions.get("entities", {}) or {}
+
+    all_allowed = True
+    allowed_reason = None
+    for eid in sorted(entity_ids):
+        if eid in role_entities:
+            decision = _rule_decision(role_entities[eid], service)
+            if decision is False:
+                return False, f"entity {eid} service {service} blocked by role {user_role}"
+            if decision is True:
+                continue
+        elif eid in default_entities and _rule_decision(default_entities[eid], service) is False:
+            return False, f"entity {eid} service {service} blocked by default restrictions"
+
+        area_id = _get_entity_area_id(hass, eid)
+        if area_id is None or area_id not in role_areas:
+            all_allowed = False
+            continue
+
+        decision = _rule_decision(role_areas[area_id], service)
+        if decision is False:
+            return False, f"entity {eid} in area {area_id}: service {service} blocked by role {user_role}"
+        if decision is None:
+            all_allowed = False
+        else:
+            allowed_reason = f"area {area_id} service {service} allowed by role {user_role}"
+
+    if all_allowed and allowed_reason:
+        return True, allowed_reason
+    return None
+
+
 def _check_service_access_with_reason(
     domain: str,
     service: str,
     service_data: Optional[Dict[str, Any]],
     user_id: Optional[str],
     access_config: Dict[str, Any],
-    hass: HomeAssistant = None
+    hass: HomeAssistant = None,
+    target: Optional[Dict[str, Any]] = None
 ) -> tuple[bool, str]:
     """Check if a user has access to a specific service call with detailed reason."""
     
@@ -840,6 +1008,14 @@ def _check_service_access_with_reason(
                     elif service in role_entity_services:  # Role blocks specific service
                         return False, f"entity {entity_id} service {service} blocked by role {user_role}"
 
+    # Area (room) rules: more specific than domain rules, less specific than entity rules
+    if hass and permissions.get("areas"):
+        area_result = _check_area_access(
+            hass, domain, service, service_data, target, permissions, default_restrictions, user_role
+        )
+        if area_result is not None:
+            return area_result
+
     default_domains = default_restrictions.get("domains", {})
     role_domains = permissions.get("domains", {})
     
@@ -940,10 +1116,11 @@ def _check_service_access(
     service_data: Optional[Dict[str, Any]],
     user_id: Optional[str],
     access_config: Dict[str, Any],
-    hass: HomeAssistant = None
+    hass: HomeAssistant = None,
+    target: Optional[Dict[str, Any]] = None
 ) -> bool:
     """Check if a user has access to a specific service call."""
-    result, _ = _check_service_access_with_reason(domain, service, service_data, user_id, access_config, hass)
+    result, _ = _check_service_access_with_reason(domain, service, service_data, user_id, access_config, hass, target)
     return result
 
 
