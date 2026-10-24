@@ -1,6 +1,7 @@
 """RBAC Middleware for Home Assistant."""
 import logging
 import os
+import shutil
 from typing import Any, Dict, Optional
 from datetime import datetime
 
@@ -32,11 +33,46 @@ class RBACConfigURLSensor(SensorEntity):
         self._attr_native_value = f"{base_url}/api/rbac/static/config.html" if base_url else "/api/rbac/static/config.html"
 
 
+ACCESS_CONTROL_FILE = "access_control.yaml"
+DENY_LOG_FILE = "deny_list.log"
+
+
+def _storage_path(hass: HomeAssistant, filename: str) -> str:
+    """Path of a writable RBAC data file, kept outside the component folder.
+
+    The component folder may be read-only (e.g. installed from the Nix store)
+    or replaced on update (e.g. by HACS), so data lives in <config>/rbac/.
+    """
+    return hass.config.path(DOMAIN, filename)
+
+
+def _legacy_path(hass: HomeAssistant, filename: str) -> str:
+    """Path of a data file in the old location inside the component folder."""
+    return os.path.join(hass.config.config_dir, "custom_components", DOMAIN, filename)
+
+
+def _migrate_storage(hass: HomeAssistant) -> None:
+    """Copy data files from the component folder to the storage folder once."""
+    os.makedirs(hass.config.path(DOMAIN), exist_ok=True)
+    for filename in (ACCESS_CONTROL_FILE, DENY_LOG_FILE):
+        new_path = _storage_path(hass, filename)
+        old_path = _legacy_path(hass, filename)
+        if os.path.exists(new_path) or not os.path.isfile(old_path):
+            continue
+        try:
+            # copyfile doesn't copy permissions, so a read-only source yields a writable copy
+            shutil.copyfile(old_path, new_path)
+            _LOGGER.info(f"Migrated {old_path} to {new_path}")
+        except Exception as e:
+            _LOGGER.error(f"Failed to migrate {old_path} to {new_path}: {e}")
+
+
 async def _load_access_control_config(hass: HomeAssistant) -> Dict[str, Any]:
     """Load access control configuration from YAML file."""
-    config_path = os.path.join(hass.config.config_dir, "custom_components", "rbac", "access_control.yaml")
-    
+    config_path = _storage_path(hass, ACCESS_CONTROL_FILE)
+
     def _load_file():
+        _migrate_storage(hass)
         try:
             with open(config_path, 'r') as f:
                 return yaml.safe_load(f)
@@ -1248,10 +1284,11 @@ def _is_top_level_user(hass: HomeAssistant, user_id: str) -> bool:
 
 async def _save_access_control_config(hass: HomeAssistant, config: Dict[str, Any]) -> bool:
     """Save access control configuration to YAML file."""
-    config_path = os.path.join(hass.config.config_dir, "custom_components", "rbac", "access_control.yaml")
+    config_path = _storage_path(hass, ACCESS_CONTROL_FILE)
     
     def _save_file():
         try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
             with open(config_path, 'w') as f:
                 yaml.dump(config, f, default_flow_style=False, indent=2, sort_keys=False)
             return True
@@ -1268,7 +1305,7 @@ async def _save_access_control_config(hass: HomeAssistant, config: Dict[str, Any
 def _log_denial_to_file(hass: HomeAssistant, user_id: str, user_name: str, user_role: str, domain: str, service: str, reason: str):
     """Log access denial to deny_list.log file."""
     try:
-        log_path = os.path.join(hass.config.config_dir, "custom_components", "rbac", "deny_list.log")
+        log_path = _storage_path(hass, DENY_LOG_FILE)
         
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
@@ -1286,7 +1323,7 @@ def _log_denial_to_file(hass: HomeAssistant, user_id: str, user_name: str, user_
 def _get_deny_log_contents(hass: HomeAssistant) -> str:
     """Get the contents of the deny_list.log file."""
     try:
-        log_path = os.path.join(hass.config.config_dir, "custom_components", "rbac", "deny_list.log")
+        log_path = _storage_path(hass, DENY_LOG_FILE)
         
         if not os.path.exists(log_path):
             return "No deny log file found. Denials will be logged here when they occur."
@@ -1307,7 +1344,7 @@ def _get_deny_log_contents(hass: HomeAssistant) -> str:
 def _clear_deny_log(hass: HomeAssistant) -> bool:
     """Clear the contents of the deny_list.log file."""
     try:
-        log_path = os.path.join(hass.config.config_dir, "custom_components", "rbac", "deny_list.log")
+        log_path = _storage_path(hass, DENY_LOG_FILE)
         
         with open(log_path, 'w', encoding='utf-8') as log_file:
             log_file.write("")

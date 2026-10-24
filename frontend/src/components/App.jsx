@@ -943,7 +943,7 @@ export function App() {
                     )}
                     {logDenyList && (
                       <span style={{ fontSize: '12px', color: '#999', fontStyle: 'italic' }}>
-                        File: custom_components/rbac/deny_list.log
+                        File: rbac/deny_list.log (in your HA config folder)
                       </span>
                     )}
                   </div>

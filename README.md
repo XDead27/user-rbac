@@ -126,6 +126,7 @@ roles:
 - Create a guest role that utilizes the current user context in a template to determine if they should have access to your homes entities based on if they are within proximity of your house ('Guest' role is used when they are not at 'home', 'User' role is used if they are at home) {{ states[current_user_str].state != 'home'}}
 
 ## 📝 Notes
+- The configuration (`access_control.yaml`) and deny log (`deny_list.log`) are stored in `<HA config>/rbac/`, outside the component folder, so they survive updates and work when the component folder is read-only (e.g. NixOS). Existing files in `custom_components/rbac/` are copied there automatically on first start.
 - Admin users or users assigned an admin role will be able to access the RBAC configuration page 
 - Its possible to assign templates to each role. Templates will be evaluated each time a user that has that role executes a service call. The template will determine if the users role should be used, or if it should fallback to a different role with an entierly different set of permissions. This makes it possible to create more complex auth systems based on current states from your HA instance.
 - Default domain/enttiy blocklists are supported. Any non-admin user will always have these restrictions enforced.
