@@ -237,7 +237,7 @@ export function DenyLogModal({ visible, onClose }) {
 
       <div style={{ marginTop: '12px', fontSize: '12px', color: '#666' }}>
         <Text type="secondary">
-          Log file location: custom_components/rbac/deny_list.log
+          Log file location: rbac/deny_list.log (in your HA config folder)
         </Text>
       </div>
     </Modal>
