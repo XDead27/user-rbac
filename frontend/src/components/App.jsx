@@ -35,6 +35,7 @@ export function App() {
     users: [],
     domains: [],
     entities: [],
+    areas: [],
     services: [],
     config: null
   });
@@ -144,12 +145,13 @@ export function App() {
       }
 
       console.log('Making API calls...');
-      const [usersRes, domainsRes, entitiesRes, servicesRes, configRes] = await Promise.all([
+      const [usersRes, domainsRes, entitiesRes, servicesRes, configRes, areasRes] = await Promise.all([
         makeAuthenticatedRequest('/api/rbac/users'),
         makeAuthenticatedRequest('/api/rbac/domains'),
         makeAuthenticatedRequest('/api/rbac/entities'),
         makeAuthenticatedRequest('/api/rbac/services'),
-        makeAuthenticatedRequest('/api/rbac/config')
+        makeAuthenticatedRequest('/api/rbac/config'),
+        makeAuthenticatedRequest('/api/rbac/areas')
       ]);
 
       console.log('API responses:', { usersRes, domainsRes, entitiesRes, servicesRes, configRes });
@@ -200,9 +202,11 @@ export function App() {
         servicesRes.json(),
         configRes.json()
       ]);
+      // Areas are optional so older backends without the endpoint keep working
+      const areas = areasRes.ok ? await areasRes.json() : [];
 
       console.log('Loaded data:', { users, domains, entities, services, config });
-      setData({ users, domains, entities, services, config });
+      setData({ users, domains, entities, areas, services, config });
       setIntegrationConfigured(true);
       
       // Load enabled state from config

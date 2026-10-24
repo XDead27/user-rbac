@@ -75,6 +75,7 @@ Due to the nature of this application patching core functions, its possible that
 - **YAML-Based Configuration**: Ability to define access control rules in a YAML file.
 - **Modernized Frontend for Configuration**: Alternatively use the admin frontend to configure the access control rules.
 - **Domain and Entity Level Control**: Restrict access at both domain and entity levels.
+- **Room (Area) Level Control**: Allow or block everything assigned to a Home Assistant area (devices, scenes, scripts, etc.), e.g. a role that can only control the kitchen.
 - **Action/Service call Control**: Restrict actions on specific domains or entities, or restrict all actions tied to an entity.
 - **Allow All and Deny All settings supported**: Configure roles to allow everything, with specific blocked entities or block everything, with specific allowed entities.
 - **Frontend Blocking**: Remove blocked entities from the native HA quickbar
@@ -100,6 +101,25 @@ Due to the nature of this application patching core functions, its possible that
 - Configure Roles and Role Assignments
 - Changes to the config take effect immediantly without any restart needed
 - Test with users to ensure denied action calls are blocked
+
+## 🚪 Room-Based Access (Areas)
+Roles can contain area rules next to domain and entity rules. An entity belongs to an area if the entity itself is assigned to it, or otherwise if its device is. Scenes, scripts and automations only count when you assign them an area.
+
+A role that can only control the kitchen:
+```yaml
+roles:
+  kitchen_only:
+    description: Can only control the kitchen
+    deny_all: true
+    permissions:
+      areas:
+        kitchen:          # area_id
+          allow: true
+          services: []    # empty = all services
+```
+- Precedence: entity rules > area rules > domain rules > Allow All / Deny All.
+- Calls targeting `area_id`, `device_id`, `floor_id` or `label_id` are expanded to their entities for area rules; a call is only allowed by an area rule when **every** targeted entity is allowed.
+- Area rules use the same allow/block + optional services format as domain and entity rules, so you can also block a single room in an Allow All role.
 
 ## 💡 Creative Ideas
 - Restrict non household users to sensitive domains like 'light', 'camera', or home assistant shutdown services

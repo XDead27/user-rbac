@@ -412,6 +412,23 @@ export function RolesManagement({ data, onSuccess, onError, onDataChange }) {
                         </Tag>
                       </Tooltip>
                     )}
+                    {Object.keys(role.permissions?.areas || {}).length > 0 && (
+                      <Tooltip 
+                        title={
+                          <div>
+                            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>Areas:</div>
+                            {Object.keys(role.permissions.areas).map(areaId => (
+                              <div key={areaId} style={{ fontSize: '12px' }}>• {(data.areas || []).find(a => a.id === areaId)?.name || areaId}</div>
+                            ))}
+                          </div>
+                        }
+                        placement="top"
+                      >
+                        <Tag color="purple">
+                          {Object.keys(role.permissions.areas).length} areas
+                        </Tag>
+                      </Tooltip>
+                    )}
                   </Space>
                 </div>
               </Card>
@@ -441,6 +458,7 @@ export function RolesManagement({ data, onSuccess, onError, onDataChange }) {
         availableRoles={Object.keys(roles)}
         domains={data.domains}
         entities={data.entities}
+        areas={data.areas}
         services={data.services}
       />
 
@@ -454,6 +472,7 @@ export function RolesManagement({ data, onSuccess, onError, onDataChange }) {
         availableRoles={Object.keys(roles)}
         domains={data.domains}
         entities={data.entities}
+        areas={data.areas}
         services={data.services}
       />
     </div>

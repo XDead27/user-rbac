@@ -20,6 +20,7 @@ from . import (
     reload_access_config,
     _is_top_level_user,
     _is_builtin_ha_user,
+    _get_entity_area_id,
     add_user_access,
     remove_user_access,
     update_user_role,
@@ -728,6 +729,54 @@ class RBACEntitiesView(HomeAssistantView):
             return self.json({"error": str(e)}, status_code=500)
 
 
+class RBACAreasView(HomeAssistantView):
+    """Handle RBAC areas (rooms) API requests."""
+
+    url = "/api/rbac/areas"
+    name = "api:rbac:areas"
+    requires_auth = True
+
+    async def get(self, request):
+        """Get all areas with the entities assigned to them."""
+        hass = request.app["hass"]
+        user = request["hass_user"]
+
+        # Check admin permissions
+        if not await _is_admin_user(hass, user.id):
+            return self.json({
+                "error": "Admin access required",
+                "message": "Only administrators can access area information",
+                "redirect_url": "/"
+            }, status_code=403)
+
+        try:
+            from homeassistant.helpers import area_registry as ar
+
+            areas = {
+                area.id: {
+                    "id": area.id,
+                    "name": area.name,
+                    "floor_id": getattr(area, "floor_id", None),
+                    "entities": []
+                }
+                for area in ar.async_get(hass).async_list_areas()
+            }
+
+            for state in hass.states.async_all():
+                area_id = _get_entity_area_id(hass, state.entity_id)
+                if area_id in areas:
+                    areas[area_id]["entities"].append(state.entity_id)
+
+            result = sorted(areas.values(), key=lambda a: a["name"].lower())
+            for area in result:
+                area["entities"].sort()
+
+            return self.json(result)
+        except Exception as e:
+            _LOGGER.error(f"Error getting areas: {e}")
+            return self.json({"error": str(e)}, status_code=500)
+
+
 class RBACServicesView(HomeAssistantView):
     """Handle RBAC services API requests."""
 
@@ -1078,6 +1127,7 @@ class RBACFrontendBlockingView(HomeAssistantView):
                 role_permissions = role_config.get("permissions", {})
                 role_domains = role_permissions.get("domains", {})
                 role_entities = role_permissions.get("entities", {})
+                role_areas = role_permissions.get("areas", {}) or {}
                 
                 # Get user-specific restrictions
                 user_restrictions = user_config.get("restrictions", {})
@@ -1127,7 +1177,14 @@ class RBACFrontendBlockingView(HomeAssistantView):
                         role_entity_config = role_entities[entity]
                         if isinstance(role_entity_config, dict):
                             entity_allowed = role_entity_config.get("allow", False)
-                    
+
+                    # Check role area (room) permissions
+                    elif not entity_allowed and role_areas:
+                        area_id = _get_entity_area_id(hass, entity)
+                        role_area_config = role_areas.get(area_id) if area_id else None
+                        if isinstance(role_area_config, dict):
+                            entity_allowed = role_area_config.get("allow", False)
+
                     if entity_allowed:
                         allowed_entities.append(entity)
                     else:
@@ -1151,12 +1208,13 @@ class RBACFrontendBlockingView(HomeAssistantView):
             role_permissions = role_config.get("permissions", {})
             role_domains = role_permissions.get("domains", {})
             role_entities = role_permissions.get("entities", {})
-            
+            role_areas = role_permissions.get("areas", {}) or {}
+
             # Get user-specific restrictions
             user_restrictions = user_config.get("restrictions", {})
             user_domains = user_restrictions.get("domains", {})
             user_entities = user_restrictions.get("entities", {})
-            
+
             # Check if role allows by default (opposite of deny_all)
             role_allows_by_default = not role_config.get("deny_all", False)
             
@@ -1257,7 +1315,8 @@ class RBACFrontendBlockingView(HomeAssistantView):
                 entity_blocked = False
                 entity_services = []
                 entity_allowed = False
-                
+                entity_area_id = _get_entity_area_id(hass, entity) if role_areas else None
+
                 # Check user-specific restrictions first (highest priority)
                 if entity in user_entities:
                     user_entity_config = user_entities[entity]
@@ -1291,7 +1350,22 @@ class RBACFrontendBlockingView(HomeAssistantView):
                             entity_services = role_services
                     else:
                         entity_blocked = True  # Non-dict means block all
-                
+
+                # Check role area (room) permissions
+                elif entity_area_id in role_areas:
+                    role_area_config = role_areas[entity_area_id]
+                    if isinstance(role_area_config, dict):
+                        area_services = role_area_config.get("services", [])
+                        if role_area_config.get("allow", False):
+                            allowed_entities.append(entity)
+                            continue
+                        if not area_services:  # Empty list means block all
+                            entity_blocked = True
+                        else:
+                            entity_services = area_services
+                    else:
+                        entity_blocked = True  # Non-dict means block all
+
                 # Check default restrictions (lowest priority)
                 elif entity in default_entities:
                     default_entity_config = default_entities[entity]
